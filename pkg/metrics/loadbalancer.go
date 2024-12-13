@@ -69,7 +69,6 @@ func registerLoadBalancerMetrics() {
 // PublishLoadBalancerMetrics makes the list request to the load balancer api and
 // passes the result to a publish function.
 func PublishLoadBalancerMetrics(client *gophercloud.ServiceClient, tenantID string) error {
-	// first step: gather the data
 	mc := newOpenStackMetric("loadbalancer", "list")
 	pages, err := loadbalancers.List(client, loadbalancers.ListOpts{}).AllPages()
 	if mc.Observe(err) != nil {
@@ -87,16 +86,9 @@ func PublishLoadBalancerMetrics(client *gophercloud.ServiceClient, tenantID stri
 		klog.Info("No load balancers found. Skipping load balancer metrics.")
 	}
 
-	// second step: reset the old metrics
-	loadbalancerAdminStateUp.Reset()
-	loadbalancerStatus.Reset()
-	loadbalancerPoolProvisioningStatus.Reset()
-	loadbalancerPoolMemberProvisioningStatus.Reset()
-
-	// third step: publish the metrics
+	lbPools := make(map[string][]pools.Pool)
+	poolMembers := make(map[string][]pools.Member)
 	for _, lb := range loadBalancerList {
-		publishLoadBalancerMetric(lb)
-
 		// for the pools associated with the loadbalancer
 		for _, poolWithOnlyId := range lb.Pools {
 			pool, err := pools.Get(client, poolWithOnlyId.ID).Extract()
@@ -104,16 +96,30 @@ func PublishLoadBalancerMetrics(client *gophercloud.ServiceClient, tenantID stri
 				klog.Warningf("Unable to get pool %s: %v", poolWithOnlyId.ID, err)
 				continue
 			}
-			publishPoolStatus(lb, *pool)
+			lbPools[lb.ID] = append(lbPools[lb.ID], *pool)
 
-			// for the pool members
 			for _, memberWithOnlyId := range pool.Members {
 				member, err := pools.GetMember(client, pool.ID, memberWithOnlyId.ID).Extract()
 				if err != nil {
 					klog.Warningf("Unable to get member %s of pool %s: %v", memberWithOnlyId.ID, poolWithOnlyId.ID, err)
 					continue
 				}
-				publishMemberStatus(lb, *pool, *member)
+				poolMembers[pool.ID] = append(poolMembers[pool.ID], *member)
+			}
+		}
+	}
+
+	loadbalancerAdminStateUp.Reset()
+	loadbalancerStatus.Reset()
+	loadbalancerPoolProvisioningStatus.Reset()
+	loadbalancerPoolMemberProvisioningStatus.Reset()
+
+	for _, lb := range loadBalancerList {
+		publishLoadBalancerMetric(lb)
+		for _, pool := range lbPools[lb.ID] {
+			publishPoolStatus(lb, pool)
+			for _, member := range poolMembers[pool.ID] {
+				publishMemberStatus(lb, pool, member)
 			}
 		}
 	}
