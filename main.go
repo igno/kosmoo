@@ -29,6 +29,7 @@ var (
 	cloudConfFile   = flag.String("cloud-conf", "", "path to the cloud.conf file. If this path is not set the scraper will use the usual OpenStack environment variables.")
 	kubeconfig      = flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "Path to the kubeconfig file to use for CLI requests. (uses in-cluster config if empty)")
 	metricsPrefix   = flag.String("metrics-prefix", metrics.DefaultMetricsPrefix, "Prefix used for all metrics")
+	useMetricsMutex = flag.Bool("use-metrics-mutex", true, "Use mutex to prevent race condition between scraping and serving metrics")
 )
 
 var (
@@ -91,9 +92,10 @@ func main() {
 		metricsMux := http.NewServeMux()
 		promHandler := promhttp.Handler()
 		metricsMux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
-			// metricsMutex ensures that we do not drop the metrics during promHandler.ServeHTTP call
-			metricsMutex.Lock()
-			defer metricsMutex.Unlock()
+			if *useMetricsMutex {
+				metricsMutex.Lock()
+				defer metricsMutex.Unlock()
+			}
 			promHandler.ServeHTTP(w, r)
 		})
 
@@ -226,8 +228,10 @@ func authOptsFromCloudConf(path string) (gophercloud.AuthOptions, gophercloud.En
 }
 
 func updateMetrics(provider *gophercloud.ProviderClient, eo gophercloud.EndpointOpts, clientset *kubernetes.Clientset, tenantID string) error {
-	metricsMutex.Lock()
-	defer metricsMutex.Unlock()
+	if *useMetricsMutex {
+		metricsMutex.Lock()
+		defer metricsMutex.Unlock()
+	}
 
 	var errs []error
 	scrapeStart := time.Now()
